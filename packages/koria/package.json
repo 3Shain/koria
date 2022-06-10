@@ -13,5 +13,8 @@
   "dependencies": {},
   "devDependencies": {
     "typescript": "^4.7.3"
-  }
+  },
+  "files": [
+    "dist"
+  ]
 }
