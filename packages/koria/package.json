@@ -1,0 +1,17 @@
+{
+  "name": "koria",
+  "version": "0.0.1",
+  "license": "MIT",
+  "sideEffects": false,
+  "main": "dist/cjs/index.js",
+  "module": "dist/es/index.js",
+  "types": "dist/es/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^4.7.3"
+  }
+}

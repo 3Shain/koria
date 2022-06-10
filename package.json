@@ -1,0 +1,29 @@
+{
+  "name": "koria-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "author": {
+    "name": "3Shain",
+    "email": "san3shain@outlook.com"
+  },
+  "homepage": "https://github.com/3Shain/koria",
+  "bugs": {
+    "url": "https://github.com/3Shain/koria/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/3Shain/koria"
+  },
+  "scripts": {
+    "build": "esno scripts/build.ts",
+    "clean": "rimraf dist types packages/*/dist",
+    "fullclean": "rimraf dist types packages/*/dist node_modules packages/*/node_modules"
+  },
+  "devDependencies": {
+    "c8": "^7.11.3",
+    "fp-ts": "^2.12.0",
+    "typescript": "^4.7.3",
+    "vite": "^2.9.6",
+    "vitest": "^0.14.1"
+  }
+}
