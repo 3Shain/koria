@@ -8,7 +8,8 @@
   "types": "dist/es/index.d.ts",
   "type": "module",
   "scripts": {
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "build": "rimraf dist && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json"
   },
   "dependencies": {},
   "devDependencies": {

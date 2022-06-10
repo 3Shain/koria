@@ -1,4 +1,4 @@
 
 const a = 0;
-
-export {a};
+export {b} from './src/what';
+export {a as a111};
