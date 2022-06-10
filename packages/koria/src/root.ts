@@ -3,9 +3,14 @@ import {
   createMultiPromptGenerator,
   perform,
 } from "./continuation";
-import { ImmediateError, ImmediateValue, Value } from "./value";
+import { ImmediateError, ImmediateValue, Promised, Value } from "./value";
 
-class Container<T = unknown> {
+interface State<T> {
+  readonly latest: Value<T>;
+  subscribe(next: Function): Function;
+}
+
+class ContainerInternal<T = unknown> {
   get latest() {
     return this.getValue();
   }
@@ -16,37 +21,70 @@ class Container<T = unknown> {
   subscribe(next: Function) {}
 }
 
+const Self = new ContainerInternal(-1, () => {
+  throw new Error("Unexpected");
+});
+
 type Setter<T> = (value: T) => void;
 
-type Reader = <T>(container: Container<T>) => T;
+type Reader = <T>(container: State<T> | Value<T>) => T;
 
-function defineState<T>(initial: T) {
-  return perform<Operations>({
-    type: "state",
-    initial,
-  }) as [Container<T>, Setter<T>];
-}
+type ComputeDerivation<T> = () => ContinuationResult<State<any> | Value, T>;
 
-function defineDerivation<T>(
-  initial: T,
-  formula: (reader: Reader, self: Container<T>) => T
-) {
-  return perform<Operations>({
-    type: "derivation",
-    initial,
-    gen: createMultiPromptGenerator((self) => formula(read, self)),
-  }) as Container<T>;
-}
+type DerivationDefinition<T> = {
+  initial: Value<T>;
+  fn: ComputeDerivation<T>;
+};
 
-type Operations =
+const state = (()=>{
+  function state<T>(initial: Value<T>) {
+    return perform<Operations>({
+      type: "state",
+      initial,
+    }) as [State<T>, Setter<T>];
+  }
+
+  state.fromValue = <T>(value:T) => state(fromValue(value))
+  state.fromError = (error: any) => state(fromError(error))
+  state.fromPromise = <T>(promise:Promise<T>) => state(fromPromise(promise));
+
+  return state;
+})();
+
+const derive = (() => {
+  function derive<T>(definition: DerivationDefinition<T>) {
+    return perform<Operations>({
+      type: "derivation",
+      initial: definition.initial,
+      gen: definition.fn,
+    }) as State<T>;
+  }
+
+  derive.fromFormula = <R>(formula: (read: Reader) => R) =>
+    derive(fromFormula(formula));
+  derive.fromLifting = <Inputs extends readonly unknown[], Return>(
+    inputs: [...InputTuple<Inputs>],
+    liftFn: (...args: Inputs) => Value<Return>
+  ) => derive(fromLifting(inputs, liftFn));
+
+  // derive.fromFormula = <X>(formula:X) => {
+  //   return derive(fromFormula(formula));
+  // }
+
+  // derive.fromLifting =
+
+  return derive;
+})();
+
+type Operations<T = unknown> =
   | {
       type: "state";
-      initial: any;
+      initial: Value<T>;
     }
   | {
       type: "derivation";
-      initial: any;
-      gen: (self: Container<any>) => any;
+      initial: Value<T>;
+      gen: ComputeDerivation<T>;
     };
 
 function root<T>(program: () => T) {
@@ -60,29 +98,28 @@ function root<T>(program: () => T) {
     | {
         type: "computation";
         current: Value<any>;
-        gen: (self: Container<any>) => any;
+        fn: ComputeDerivation<any>;
       }
   )[] = [];
   const getLatest = (v: number) => () => chain[v].current.map((x) => x[1]);
   while (!result.done) {
+    let offset = chain.length - 1;
     if (result.value.type === "state") {
       chain.push({
         type: "state",
         current: new ImmediateValue([[], result.value.initial]),
       });
-      let iii = chain.length - 1;
       result = result.resume([
-        new Container(iii, getLatest(iii)),
-        (value: any) => update({ [iii]: new ImmediateValue([[], value]) }),
+        new ContainerInternal(offset, getLatest(offset)),
+        (value: any) => update({ [offset]: new ImmediateValue([[], value]) }),
       ]);
     } else if (result.value.type === "derivation") {
       chain.push({
         type: "computation",
         current: new ImmediateValue([[], result.value.initial]),
-        gen: result.value.gen,
+        fn: result.value.gen,
       });
-      let iii = chain.length - 1;
-      result = result.resume(new Container(iii, getLatest(iii)));
+      result = result.resume(new ContainerInternal(offset, getLatest(offset)));
     } else {
       throw new Error("Invalid operation");
     }
@@ -91,13 +128,18 @@ function root<T>(program: () => T) {
     const currentStateList: Value<[number[], any]>[] = [];
     for (let i = 0; i < chain.length; i++) {
       const old = chain[i];
+
+      /* possible bail out */
+      // if(old instanceof ImmediateValue) {
+      //   const [s] = old.value;
+      // }
       if (old.type === "state") {
         currentStateList.push(
-          (old.current = patch[i] ? patch[i] : old.current)
+          (old.current = patch[i] ? patch[i].map((x) => [[], x]) : old.current)
         );
       } else {
         currentStateList.push(
-          (old.current = computeNew(old.current, currentStateList, old.gen, i))
+          (old.current = computeNew(old.current, currentStateList, old.fn, i))
         );
       }
     }
@@ -108,33 +150,128 @@ function root<T>(program: () => T) {
 
 const read: Reader = perform;
 
-function computeNew(
-  old: Value<[number[], any]>,
-  ctx: Value<[number[], any]>[],
-  gen: (self: Container) => any,
+function computeNew<T>(
+  previous: Value<[number[], T]>,
+  context: Value<[number[], any]>[],
+  computation: ComputeDerivation<T>,
   validOffset: number
 ) {
-  /* possible bail out */
-  // if(old instanceof ImmediateValue) {
-  //   const [s] = old.value;
-  // }
-  function cont(
-    res: ContinuationResult<Container, any>
-  ): Value<[number[], any]> {
+  function cont<T>(
+    res: ContinuationResult<State<any> | Value, T>
+  ): Value<[number[], T]> {
     if (res.done) {
       return new ImmediateValue([[], res.value]);
     }
-    const container = res.value;
-    if (container.index > validOffset) {
-      return new ImmediateError([[], new Error("Out of index")]);
+    const container = res.value as ContainerInternal | Value;
+    if (container instanceof ContainerInternal) {
+      // if(container instanceof )
+      // todo: might be just a value
+      if (container.index > validOffset) {
+        return new ImmediateError([[], new Error("Out of index")]);
+      }
+      const current =
+        container.index === -1 ? previous : context[container.index];
+      return current
+        .bind((v) => cont(res.resume(v[1])))
+        .map(([s, v]) => [[container.index, ...s], v]);
+    } else {
+      return container.bind((v) => cont(res.resume(v)));
     }
-    const current =
-      container.index === validOffset ? old : ctx[container.index];
-    return current
-      .bind((v) => cont(res.resume(v[1])))
-      .map(([s, v]) => [[container.index, ...s], v]);
   }
-  return cont(gen(new Container(validOffset, null as any /**fix me */)));
+  return cont(computation());
 }
 
-export { root, defineState, defineDerivation };
+class InconsistencyError extends Error {}
+
+function getSyncConsistentValue<T>(value: Value<T>) {
+  if (value instanceof ImmediateValue) {
+    return value.value;
+  }
+  if (value instanceof ImmediateError) {
+    throw value.error;
+  }
+  throw new InconsistencyError();
+}
+
+function getConsistentValue<T>(value: Value<T>) {
+  if (value instanceof ImmediateValue) {
+    return value.value;
+  }
+  if (value instanceof ImmediateError) {
+    throw value.error;
+  }
+  return value.promise;
+}
+
+function getAsyncLatestValue() {
+  return new Promise((resolve, reject) => {});
+}
+
+/** */
+
+function fromValue<T>(value: T): Value<T> {
+  return new ImmediateValue(value);
+}
+
+function fromError(error: any): Value<any> {
+  return new ImmediateError(error);
+}
+
+function fromPromise<T>(promise: Promise<T>): Value<T> {
+  return new Promised(promise);
+}
+
+function fromFormula<R>(formula: (read: Reader) => R): DerivationDefinition<R> {
+  return {
+    initial: fromError("Not expect to read"),
+    fn: createMultiPromptGenerator(() => formula(read)),
+  };
+}
+
+type InputTuple<T> = { [K in keyof T]: State<T[K]> };
+
+function fromLifting<Inputs extends readonly unknown[], Return>(
+  inputs: [...InputTuple<Inputs>],
+  liftFn: (...args: Inputs) => Value<Return>
+): DerivationDefinition<Return> {
+  function reduce(
+    remainInputs: any[],
+    collectedData: any
+  ): ContinuationResult<State<any> | Value, Return> {
+    if (remainInputs.length === 0) {
+      return {
+        done: false,
+        value: liftFn(...collectedData),
+        resume: (value: any) => {
+          return {
+            done: true,
+            value,
+          };
+        },
+      };
+    }
+    return {
+      done: false,
+      value: remainInputs[0],
+      resume: (x: any) => reduce(remainInputs.slice(1), [...collectedData, x]),
+    };
+  }
+  return {
+    initial: fromError("not expected to read"),
+    fn: () => reduce(inputs, []),
+  };
+}
+
+export {
+  root,
+  state,
+  derive,
+  fromError,
+  fromValue,
+  fromPromise,
+  fromFormula,
+  fromLifting,
+  getSyncConsistentValue,
+  getConsistentValue,
+};
+export type { State };
