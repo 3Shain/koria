@@ -3,6 +3,7 @@ import {
   createMultiPromptGenerator,
   perform,
 } from "./continuation";
+import { HierarchicalId } from "./hierarchy";
 import { ImmediateError, ImmediateValue, Promised, Value } from "./value";
 
 interface State<T> {
@@ -11,21 +12,14 @@ interface State<T> {
 }
 
 class ContainerInternal<T = unknown> {
-  get latest() {
-    return this.getValue();
-  }
+
   constructor(
-    public readonly index: number,
-    private getValue: () => Value<T>
+    public readonly hid: HierarchicalId
   ) {}
   subscribe(next: Function) {}
 }
 
-const Self = new ContainerInternal(-1, () => {
-  throw new Error("Unexpected");
-});
-
-type Setter<T> = (value: T) => void;
+type Setter<T> = (value: Value<T>) => void;
 
 type Reader = <T>(container: State<T> | Value<T>) => T;
 
@@ -36,7 +30,7 @@ type DerivationDefinition<T> = {
   fn: ComputeDerivation<T>;
 };
 
-const state = (()=>{
+const state = (() => {
   function state<T>(initial: Value<T>) {
     return perform<Operations>({
       type: "state",
@@ -44,9 +38,9 @@ const state = (()=>{
     }) as [State<T>, Setter<T>];
   }
 
-  state.fromValue = <T>(value:T) => state(fromValue(value))
-  state.fromError = (error: any) => state(fromError(error))
-  state.fromPromise = <T>(promise:Promise<T>) => state(fromPromise(promise));
+  state.of = <T>(value: T) => state(fromValue(value));
+  state.ofError = (error: any) => state(fromError(error));
+  state.fromPromise = <T>(promise: Promise<T>) => state(fromPromise(promise));
 
   return state;
 })();
@@ -87,10 +81,16 @@ type Operations<T = unknown> =
       gen: ComputeDerivation<T>;
     };
 
-function root<T>(program: () => T) {
+function createUpdate(hid: HierarchicalId) {
+  return function update(value:Value) {
+
+  }
+}
+
+function root<T>(program: () => T, r: HierarchicalId) {
   const gen = createMultiPromptGenerator(program);
   let result = gen<Operations>();
-  let chain: (
+  let stateGraph: (
     | {
         type: "state";
         current: Value<any>;
@@ -101,48 +101,31 @@ function root<T>(program: () => T) {
         fn: ComputeDerivation<any>;
       }
   )[] = [];
-  const getLatest = (v: number) => () => chain[v].current.map((x) => x[1]);
   while (!result.done) {
-    let offset = chain.length - 1;
+    const offset = r.next();
+    r = offset;
     if (result.value.type === "state") {
-      chain.push({
+      stateGraph.push({
         type: "state",
-        current: new ImmediateValue([[], result.value.initial]),
+        current: result.value.initial,
       });
       result = result.resume([
-        new ContainerInternal(offset, getLatest(offset)),
-        (value: any) => update({ [offset]: new ImmediateValue([[], value]) }),
+        new ContainerInternal(offset),
+        (v: Value) => {
+          //TODO:
+        },
       ]);
-    } else if (result.value.type === "derivation") {
-      chain.push({
+    } else {
+      stateGraph.push({
         type: "computation",
-        current: new ImmediateValue([[], result.value.initial]),
+        current: result.value.initial,
         fn: result.value.gen,
       });
-      result = result.resume(new ContainerInternal(offset, getLatest(offset)));
-    } else {
-      throw new Error("Invalid operation");
+      result = result.resume(new ContainerInternal(offset));
     }
   }
   const update = (patch: { [key: number]: Value }) => {
-    const currentStateList: Value<[number[], any]>[] = [];
-    for (let i = 0; i < chain.length; i++) {
-      const old = chain[i];
-
-      /* possible bail out */
-      // if(old instanceof ImmediateValue) {
-      //   const [s] = old.value;
-      // }
-      if (old.type === "state") {
-        currentStateList.push(
-          (old.current = patch[i] ? patch[i].map((x) => [[], x]) : old.current)
-        );
-      } else {
-        currentStateList.push(
-          (old.current = computeNew(old.current, currentStateList, old.fn, i))
-        );
-      }
-    }
+    const currentStateList: Value<any>[] = [];
   };
   update({});
   return result.value;
@@ -151,29 +134,25 @@ function root<T>(program: () => T) {
 const read: Reader = perform;
 
 function computeNew<T>(
-  previous: Value<[number[], T]>,
-  context: Value<[number[], any]>[],
+  previous: Value<T>,
+  context: Value<any>[],
   computation: ComputeDerivation<T>,
-  validOffset: number
+  self: HierarchicalId
 ) {
   function cont<T>(
     res: ContinuationResult<State<any> | Value, T>
-  ): Value<[number[], T]> {
+  ): Value<T> {
     if (res.done) {
-      return new ImmediateValue([[], res.value]);
+      return new ImmediateValue(res.value);
     }
     const container = res.value as ContainerInternal | Value;
     if (container instanceof ContainerInternal) {
-      // if(container instanceof )
-      // todo: might be just a value
-      if (container.index > validOffset) {
-        return new ImmediateError([[], new Error("Out of index")]);
+      if (!self.checkReachability(container.hid)) {
+        return new ImmediateError(new ReferenceError("Out of range"));
       }
-      const current =
-        container.index === -1 ? previous : context[container.index];
+      const current:Value<T> = ;
       return current
-        .bind((v) => cont(res.resume(v[1])))
-        .map(([s, v]) => [[container.index, ...s], v]);
+        .bind((v) => cont(res.resume(v)));
     } else {
       return container.bind((v) => cont(res.resume(v)));
     }
@@ -184,13 +163,18 @@ function computeNew<T>(
 class InconsistencyError extends Error {}
 
 function getSyncConsistentValue<T>(value: Value<T>) {
-  if (value instanceof ImmediateValue) {
-    return value.value;
+  try {
+    if (value instanceof ImmediateValue) {
+      return value.value;
+    }
+    if (value instanceof ImmediateError) {
+      throw value.error;
+    }
+    throw new InconsistencyError("Inconsistency occurred");
+  } catch (error) {
+    ((Error as any)["captureStackTrace"] as any)(error, getSyncConsistentValue);
+    throw error;
   }
-  if (value instanceof ImmediateError) {
-    throw value.error;
-  }
-  throw new InconsistencyError();
 }
 
 function getConsistentValue<T>(value: Value<T>) {

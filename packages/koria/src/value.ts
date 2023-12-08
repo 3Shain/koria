@@ -52,7 +52,12 @@ class Promised<T> {
   }
 }
 
+const Value = {
+  of: <T>(value:T) => new ImmediateValue(value),
+  ofError: (error: any) => new ImmediateError(error),
+  ofPromise: <T>(promise:Promise<T>) => new Promised(promise)
+}
+
 export {
-  Promised, ImmediateError, ImmediateValue
+  Promised, ImmediateError, ImmediateValue, Value
 };
-export type { Value };

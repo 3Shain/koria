@@ -1,0 +1,32 @@
+import { describe, it } from "vitest";
+import {
+  state,
+  root,
+  fromValue,
+  fromPromise,
+  getConsistentValue,
+  getSyncConsistentValue,
+  derive,
+} from "./root";
+import { Value } from "./value";
+
+describe("root", () => {
+  it("case1", async () => {
+    const { a,seta,c } = root(() => {
+      const [a, seta] = state.of(0);
+      const [b] = state.of(1);
+
+      const c = derive.fromFormula(($) => $(a) + $(b));
+
+      // const d: State< {...State<...>...} > = the_api(state, (value)=>{ ... root body ... })
+
+      return {
+        a,
+        seta,
+        c,
+      };
+    });
+    seta(Value.of(0));
+
+  });
+});

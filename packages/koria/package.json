@@ -11,7 +11,9 @@
     "coverage": "vitest run --coverage",
     "build": "rimraf dist && tsc -p tsconfig.json && tsc -p tsconfig.cjs.json"
   },
-  "dependencies": {},
+  "dependencies": {
+    "solid-js": "^1.5.4"
+  },
   "devDependencies": {
     "typescript": "^4.7.3"
   },
